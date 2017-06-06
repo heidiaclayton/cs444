@@ -1,0 +1,161 @@
+\documentclass[10pt,draftclsnofoot,onecolumn,journal,compsoc]{IEEEtran}
+% for IEEEtran usage, see http://www.texdoc.net/texmf-dist/doc/latex/IEEEtran/IEEEtran_HOWTO.pdf
+
+\usepackage[margin=0.75in]{geometry}
+\usepackage{graphicx}
+\usepackage{caption}
+\usepackage{hyperref}
+\usepackage{enumerate}
+\usepackage[dvipsnames]{xcolor}
+\usepackage{amssymb}
+\usepackage{listings}
+\usepackage{float}
+\title{Memory Management in Linux, FreeBSD, and Windows}
+\author{
+  \IEEEauthorblockN{Heidi Clayton} \\
+  \IEEEauthorblockA{CS 444: Operating Systems II Spring 2017 \\ Oregon State University}
+}
+
+\lstdefinestyle{C_listing}{
+  language=C,
+  keywordstyle=\color{Fuchsia},
+  commentstyle=\itshape\color{ForestGreen},
+}
+\lstset{style=C_listing}
+
+
+   
+\begin{document}
+\maketitle
+\newpage
+\tableofcontents
+\newpage
+\section{Linux}
+Memory is divided into units called \textit{pages}. Pages are typically 4096 bytes long, however this is not the case for all machines. The size can be found in the \textit{linux/mm.h} file in the \textit{PAGE\_SIZE} constant \cite{linux}. An excerpt of the \textit{page} structure is shown below.
+ 
+\begin{lstlisting}[caption={An excerpt from the \textit{page} structure in the linux/mm.h file.}]
+struct page {
+	/* First double word block */
+	unsigned long flags;		/* Atomic flags, some possibly
+					 * updated asynchronously */
+	union {
+		struct address_space *mapping;	/* If low bit clear, points to
+						 * inode address_space, or NULL.
+						 * If page mapped as anonymous
+						 * memory, low bit is set, and
+						 * it points to anon_vma object:
+						 * see PAGE_MAPPING_ANON below.
+						 */
+		void *s_mem;			/* slab first object */
+		atomic_t compound_mapcount;	/* first tail page */
+		/* page_deferred_list().next	 -- second tail page */
+	};
+
+	/* Second double word */
+	union {
+		pgoff_t index;		/* Our offset within mapping. */
+		void *freelist;		/* sl[aou]b first free object */
+		/* page_deferred_list().prev	-- second tail page */
+	};
+\end{lstlisting}
+Other notable variables in the \textit{page} structure are \textit{count}, \textit{virtual}, and \textit{flags}. \textit{count} refers to the number of references to the current page. When it hits zero, the page is freed. \textit{virtual} is a pointer to the kernel virtual address of the page. \textit{flags} contains the status of the page set by bits \cite{linux}. 
+
+Not all pages are the same in Linux, however. Pages are broken up into three categories, known as \textit{zones}, which are listed below \cite{linux}. \\
+
+\begin{tabular}{ | p{0.2\linewidth} | p{0.4\linewidth} |}
+    \hline
+    ZONE\_DMA & Zone containing pages compatible with direct memory access.\\ \hline
+    ZONE\_NORMAL & Zone containing normal, mapped pages.\\ \hline
+    ZONE\_HIGHMEM & Zone contains pages in high memory, which are not permanently 		mapped into kernel's address space.\\ \hline
+\end{tabular} \\ \\ 
+Each zone is also represented by a structure appropriately called \textit{zone}, listen below.
+
+\begin{lstlisting}[caption={The \textit{zone} structure in the linux/mmzone.h file.}]
+struct zone {
+        spinlock_t              lock;
+        unsigned long           free_pages;
+        unsigned long           pages_min;
+        unsigned long           pages_low;
+        unsigned long           pages_high;
+        unsigned long           protection[MAX_NR_ZONES];
+        spinlock_t              lru_lock;
+        struct list_head        active_list;
+        struct list_head        inactive_list;
+        unsigned long           nr_scan_active;
+        unsigned long           nr_scan_inactive;
+        unsigned long           nr_active;
+        unsigned long           nr_inactive;
+        int                     all_unreclaimable;
+        unsigned long           pages_scanned;
+        int                     temp_priority;
+        int                     prev_priority;
+        struct free_area        free_area[MAX_ORDER];
+        wait_queue_head_t       *wait_table;
+        unsigned long           wait_table_size;
+        unsigned long           wait_table_bits;
+        struct per_cpu_pageset  pageset[NR_CPUS];
+        struct pglist_data      *zone_pgdat;
+        struct page             *zone_mem_map;
+        unsigned long           zone_start_pfn;
+        char                    *name;
+        unsigned long           spanned_pages;
+        unsigned long           present_pages;
+};
+\end{lstlisting}
+The function \textit{kmalloc} can be used to allocate memory on the kernel as well as the \textit{vmalloc} function. The difference is that \textit{kmalloc} allocates memory that is physically contiguous while \textit{vmalloc} allocates memory that is virtually contiguous. Another method of memory management is called the SLAB allocator. Basically, the SLAB allocator was designed to have caches of already allocated data structures for common structures such as \textit{inode} and \textit{task\_struct}. This is more efficient than constantly allocating and deallocating memory. Each of these caches is divided into a \textit{slab}, which is typically one page, but can be multiple physically contiguous pages \cite{linux}. The SLAB allocator has queues of slabs per node per CPU, which is a lot of queues. On large systems, those queues can grow exponentially \cite{slub}.  
+
+There is also the SLOB allocator. The SLOB allocator uses a first-fit algorithm which simply finds the first available piece of memory that is large enough for the current data. Because of this simple algorithm, there is often a lot of memory fragmentation. Therefore, it is generally only recommended to be used in embedded systems or in very small systems. 
+
+Finally, there is the SLUB allocator, which is the current default on the Linux kernel. The SLUB allocator is designed to be more scalable than the SLAB allocator. Slabs in SLUB are collections of pages with objects of a given size. The metadata for each slab is also not stored at the top of the slab like it is in the SLAB allocator, making slabs easier to align. Overall, there are also fewer queues than the SLAB allocator \cite{slub}.
+
+\section{FreeBSD}
+There are 6 layers to how FreeBSD manages the kernel's address space, shown below \cite{bsd}. \\
+
+\begin{tabular}{ | p{0.2\linewidth} | p{0.4\linewidth} |}
+    \hline
+    Buckets & Per-CPU allocation of objects.\\ \hline
+    Zones & Allocation of objects from kegs to buckets.\\ \hline
+    Kegs & Collection of slabs of a given object.\\ \hline
+    Slabs & Allocation of a set of objects from vmem. \\ \hline
+    Vmem & Multiple-of-page allocations from vm\_map.\\ \hline
+    Vmem\_map & Address space partitioning. \\ \hline
+\end{tabular} \\ \\ 
+
+Like Linux, memory is also divided into pages. Memory on the kernel can be allocated with the function \textit{kmem\_malloc} similar to Linux' \textit{kmalloc} and \textit{vmalloc}. FreeBSD also has a slab memory management system. Each slab is limited to only one page (unless the object needs more than one page). This is to reduce fragmentation. The allocators for the other parts of virtual memory are fairy simple, though there are three different choices for the bottom layer address space partitioning. An allocation request can choose one of the 3 algorithms listed below for memory allocation \cite{bsd}. \\
+
+\begin{tabular}{ | p{0.2\linewidth} | p{0.4\linewidth} |}
+    \hline
+   VM\_BESTFIT & Finds the smallest segment on the freelist that satisfies the request. \\ \hline
+    VM\_INSTANTFIT & If the size of the request is $2^{n}$, take the first segment of freelist[n], otherwise take the first segment of freelist[n + 1].  \\ \hline
+    VM\_NEXTFIT & Ignores the freelist and just chooses the next suitable segment after the previous allocation. \\ \hline
+\end{tabular} \\ \\ 
+
+The best-fit algorithm is great for reducing fragmentation but can be slow on larger systems. The instant-fit algorithm is the default, as it provides near-constant time performance. The next-fit algorithm is not commonly used and is not supported in all FreeBSD systems though Solaris supports it for allocating process identifiers and the like \cite{bsd}. 
+
+\section{Windows}
+Kernel memory in Windows is divided into two parts: non-paged pool and paged pool. The non-paged pool part of memory consists of ranges of virtual memory that are also guaranteed to exist in physical memory and can be accessed at any time and therefore by any interrupt request level. The paged pool portion of memory that can be paged in or out of the system. Drivers that do not need to access memory from the dispatch level or above can access paged pool memory and it is also accessible from all process contexts \cite{win}. 
+
+Windows systems start with 4 paged pools and 1 non-paged pools and more are created depending on the number of non-uniform memory access nodes are on the system. The starting size of non-paged pools are 3\% of the system's RAM, or 40MB if 3\% of the system's RAM is less than that and 10\% of RAM is more than 40MB. Otherwise, 10\% of RAM is chosen. The maximum size of an non-paged pool is the smallest of either 75\% of physical memory or 2GB (128GB on 65-bit systems). The maximum size of a paged pool is 2GB on a 32-bit system or 128GB on a 64-bit system \cite{win}. 
+
+Similar to the slab memory allocation on Linux and FreeBSD, Windows has what is called look-aside lists. These lists are made up of pre-allocated blocks of the same size. Lists are created for commonly used structures for each processor. Drivers are allowed to create their own look-aside lists with the functions \textit{ExInitializeNPagedLookasideList} for non-paged pools and \textit{ExInitializePagedLookasideList}. Functions similar to Linux' \textit{kmalloc} and \textit{vmalloc} and FreeBSD's  \textit{kmem\_malloc} are \textit{HeapAlloc}, \textit{HeapCreate}, and \textit{HeapRealloc} \cite{win}. 
+
+\newpage
+
+\begin{thebibliography}{}
+
+\bibitem{linux}
+Love, R. \textit{Linux Kernel Development}. 2nd ed. Indianapolis, IN: Novell, 2005. Print.
+
+\bibitem{slub}
+"The SLUB Allocator." \textit{LWN.net}. Eklektix, Inc., 11 Apr. 2007. Web. 05 June 2017. \\
+Available: https://lwn.net/Articles/229984/
+
+\bibitem{bsd}
+McKusick, M. K., G. V. Neville-Neil, and R. N. M. Watson. \textit{The Design and Implementation of the FreeBSD Operating System}. Upper Saddle River: Addison-Wesley/Pearson, 2015. Print.
+
+\bibitem{win}
+Russinovich, M. E., D. A. Solomon, and A. Ionescu. \textit{Windows Internals Part II}. Redmond (Wash.): Microsoft, 2012. Print.
+\end{thebibliography}
+
+
+\end{document}
