@@ -1,0 +1,276 @@
+\documentclass[10pt,draftclsnofoot,onecolumn,journal,compsoc]{IEEEtran}
+% for IEEEtran usage, see http://www.texdoc.net/texmf-dist/doc/latex/IEEEtran/IEEEtran_HOWTO.pdf
+
+\usepackage[margin=0.75in]{geometry}
+\usepackage{graphicx}
+\usepackage{caption}
+\usepackage{hyperref}
+\usepackage{enumerate}
+\usepackage[dvipsnames]{xcolor}
+\usepackage{amssymb}
+\usepackage{listings}
+\title{Processes, Threads, and CPU Scheduling in Linux, FreeBSD, and Windows}
+\author{
+  \IEEEauthorblockN{Heidi Clayton} \\
+  \IEEEauthorblockA{CS 444: Operating Systems II Winter 2017 \\ Oregon State University}
+}
+
+\lstdefinestyle{C_listing}{
+  language=C,
+  keywordstyle=\color{Fuchsia},
+  commentstyle=\itshape\color{ForestGreen},
+}
+\lstset{style=C_listing}
+
+
+   
+\begin{document}
+\maketitle
+\newpage
+\tableofcontents
+\newpage
+
+\section{Processes}
+Processes are, at the basic level, instances of some running program. Discussed below are some similarities and differences between different implementations.
+
+\subsection{Linux}
+Linux processes are kept in a circular double-linked list of \textit{task\_struct} structures defined in \textit{$\langle$linux/sched.h$\rangle$}. Each structure is quite large, at around 1.7kb on a 32 bit system. Before the 2.6 kernel version, the \textit{task\_struct} for each process was stored at the end of its stack. This was done so architectures like x86 that have few registers (8 in the case of x86) had a convenient location for the \textit{task\_struct} without having to use a register to store the location. In newer kernels, there is a \textit{thread\_info} structure that has a pointer to the \textit{task\_struct} structure, which is dynamically allocated. It is defined in \textit{$\langle$asm/thread\_info.h$\rangle$}. This is stored at the beginning or end of the kernel stack, depending on whether the stack grows up or down \cite{linux_proc}.
+
+\begin{lstlisting}[caption={\textit{thread\_info} structure \cite{linux_proc}}]
+struct thread_info {
+        struct task_struct    *task;
+        struct exec_domain    *exec_domain;
+        unsigned long         flags;
+        unsigned long         status;
+        __u32                 cpu;
+        __s32                 preempt_count;
+        mm_segment_t          addr_limit;
+        struct restart_block  restart_block;
+        unsigned long         previous_esp;
+        __u8                  supervisor_stack[0];
+};
+\end{lstlisting}
+
+The kernel stores a process identification value, or PID, for every process. These can be seen by running the \textit{top} command on the Linux command line, showing running processes and their PIDs. This PID can be used for other commands, like \textit{kill}, as an identifier for the process.
+
+Processes all have a state which determines how the CPU will handle them. The state can be changed using the \textit{set\_current\_state} and \textit{set\_task\_state} functions. A list of possible states is provided in the table below \cite{linux_proc}. \\ \\
+
+\begin{tabular}{ | p{0.45\linewidth} | p{0.45\linewidth} | }
+    \hline
+    TASK\_RUNNING & The process is either running or in a queue ready to be run. \\ \hline
+    TASK\_INTERRUPTIBLE & The process is blocked and waiting for a signal to start running again. \\ \hline
+    TASK\_UNINTERRUPTIBLE & The process is blocked but does not wake up at a signal that it is waiting for. \\ \hline
+    TASK\_ZOMBIE & The process has finished but its parent has not yet called \textit{wait()}. \\ \hline
+    TASK\_STOPPED & The process is not running and not able to run. \\ \hline
+\end{tabular} \\ \\ 
+
+Processes are organized in a tree of sorts. The first process is always the \textit{init} process, which has a PID of 1. From then on, processes can be created with the \textit{fork()} function. Each process has a parent, the process it spawned from, and zero or more children, processes that it has spawned \cite{linux_proc}.
+
+\subsection{FreeBSD}
+Processes in FreeBSD are represented by the \textit{proc} structure that contains all vital information on the process, such as the PID, flags, and open files. Like Linux, FreeBSD keeps processes in a linked list of dynamically allocated \textit{proc} structures \cite{bsd_proc}. 
+
+\begin{lstlisting}[caption={Excerpt from \textit{proc} structure \cite{bsd_proc2}}]
+struct  proc {
+        struct  proc *p_forw;           /* Doubly-linked run/sleep queue. */
+        struct  proc *p_back;
+        struct  proc *p_next;           /* Linked list of active procs */
+        struct  proc **p_prev;          /*    and zombies. */
+
+        /* substructures: */
+        struct  pcred *p_cred;          /* Process owner's identity. */
+        struct  filedesc *p_fd;         /* Ptr to open files structure. */
+        struct  pstats *p_stats;        /* Accounting/statistics (PROC ONLY). */
+        struct  plimit *p_limit;        /* Process limits. */
+        struct  vmspace *p_vmspace;     /* Address space. */
+        struct  sigacts *p_sigacts;     /* Signal actions, state (PROC ONLY). */
+
+#define p_ucred         p_cred->pc_ucred
+#define p_rlimit        p_limit->pl_rlimit
+
+        int     p_flag;                 /* P_* flags. */
+        char    p_stat;                 /* S* process status. */
+        char    p_pad1[3];
+
+        pid_t   p_pid;           /* Process identifier. */
+        struct  proc *p_hash;    /* Hashed based on p_pid for kill+exit+... */
+        struct  proc *p_pgrpnxt; /* Pointer to next process in process group. */
+        struct  proc *p_pptr;    /* Pointer to process structure of parent. */
+        struct  proc *p_osptr;   /* Pointer to older sibling processes. */
+        
+        ...
+
+\end{lstlisting}
+
+Also like Linux, FreeBSD has a tree-like organization of its processes. The first process is always \textit{init} with a PID of 1, and each process has a parent process and zero or more child processes. FreeBSD also creates new processes with the \textit{fork()} function. \cite{bsd_proc3}.
+
+Processes in FreeBSD also have states similar to Linux. Below is a description of the FreeBSD process states \cite{bsd_proc}.\\ \\
+
+\begin{tabular}{ | p{0.45\linewidth} | p{0.45\linewidth} | }
+    \hline
+    NEW & The process has just been created. \\ \hline
+    NORMAL & The process has enough resources to begin execution. \\ \hline
+    RUNNABLE & Part of the NORMAL state. The process preparing for execution. \\ \hline
+    SLEEPING & Part of the NORMAL state. The process is waiting for some event to start running. \textit{wait()}. \\ \hline
+    STOPPED & Part of the NORMAL state. The process has been stopped by a signal or its parent process until the parent process terminates. \\ \hline
+    ZOMBIE & A finished process that has not yet been freed. \\ \hline
+\end{tabular} \\ \\ 
+
+Depending on the state of the process, it is placed on one of two queues. A ZOMBIE process is placed on the \textit{zombproc} list. Otherwise, it is placed on the \textit{allproc} list. 
+
+Overall, processes between Linux and FreeBSD are extremely similar. However, since their CPU scheduling is different, process management is quite different, which is a topic that will be covered a bit later.
+
+
+\subsection{Windows}
+Windows processes are represented by a structure called \textit{EPROCESS}, similar to how Linux processes are represented by a \textit{task\_struct} structure. The structure is opaque and undocumented \cite{win_proc}. The \textit{EPROCESS} structure contains pointers to other structures, similar to Linux.
+
+The \textit{EPROCESS} structure has many fields. There are field common to Linux and other operating systems, such as a PID and flags. There are also fields that Linux does not have in its processes, such as a list of devices, a list of threads, an access token that contains security information about the process and a quota block that contains information on memory quotas \cite{win_proc2}. 
+
+Windows processes are created using the \textit{CreateProcess()} function, which takes 10 parameters, as opposed to the POSIX \textit{fork()} function, which takes none. Unlike Linux, creating a new process with \textit{CreateProcess()} does not automatically create a parent-child relationship between processes like creating a new process with \textit{fork()} does \cite{win_proc3}. 
+
+Process states in Windows are fairly similar to Linux, with a few small differences. Shown below are the states of a Windows process \cite{win_proc4}. \\ \\
+
+\begin{tabular}{ | p{0.45\linewidth} | p{0.45\linewidth} | }
+    \hline
+    Running & The process is running. \\ \hline
+    Ready & The process is in a run queue ready to be run. \\ \hline
+    Blocked & The process is blocked and ready to continue once it gets a specific signal. \\ \hline
+    Suspend & The process is suspended. Typically used when the OS needs more memory for an incoming process or for tasks like debugging. \\ \hline
+    New & The process has been created but is not runnable yet. \\ \hline
+    Exit & The process is not running and not able to run. \\ \hline
+\end{tabular} \\ \\ 
+
+Overall, Windows processes contain much more information that could reasonably be stored somewhere else and not have be initialized every time a new process is created.
+
+\section{Threads}
+Threads are paths of execution within processes. Threads are not very different from processes conceptually. They perform the same work a process can do, except they all do not have a separate address space. Processes can have multiple threads sharing the same resources but executing different tasks. 
+
+\subsection{Linux}
+Threads in Linux are interesting in that they are almost exactly the same as a process. The only difference between a thread and a process in Linux is the fact that they share the same address space. Threads are implemented as \textit{task\_struct} structures and scheduled the same as a process. Threads in Linux are considered to be a much more light-weight option than creating multiple separate processes, because when a thread is created from a process, nothing is copied since the thread shares everything with all other threads of the process. If any thread calls one of the \textit{exec()} functions, all other threads belonging to the same process are terminated. The POSIX API for threads is found in the \textit{$\langle$pthread.h$\rangle$} header file \cite{linux_thrd}. 
+
+\subsection{FreeBSD}
+Threads in FreeBSD are different from those in Linux because they are treated as a separate entity from a process. Each process has one or more threads which all have their own corresponding kernel thread which has its own kernel stack \cite{bsd_thrd}. Threads are represented by the \textit{thread} structure shown below.
+
+\begin{lstlisting}[caption={Excerpt from \textit{thread} structure \cite{bsd_thrd2}}]
+struct thread {
+	struct mtx	*volatile td_lock; /* replaces sched lock */
+	struct proc	*td_proc;	/* (*) Associated process. */
+	TAILQ_ENTRY(thread) td_plist;	/* (*) All threads in this proc. */
+	TAILQ_ENTRY(thread) td_runq;	/* (t) Run queue. */
+	TAILQ_ENTRY(thread) td_slpq;	/* (t) Sleep queue. */
+	TAILQ_ENTRY(thread) td_lockq;	/* (t) Lock queue. */
+	LIST_ENTRY(thread) td_hash;	/* (d) Hash chain. */
+	struct cpuset	*td_cpuset;	/* (t) CPU affinity mask. */
+	struct seltd	*td_sel;	/* Select queue/channel. */
+	struct sleepqueue *td_sleepqueue; /* (k) Associated sleep queue. */
+	struct turnstile *td_turnstile;	/* (k) Associated turnstile. */
+	struct rl_q_entry *td_rlqe;	/* (k) Associated range lock entry. */
+	struct umtx_q   *td_umtxq;	/* (c?) Link for when we're blocked. */
+	struct vm_domain_policy td_vm_dom_policy;	/* (c) current numa domain policy */
+	lwpid_t		td_tid;		/* (b) Thread ID. */
+	sigqueue_t	td_sigqueue;	/* (c) Sigs arrived, not delivered. */
+#define	td_siglist	td_sigqueue.sq_signals
+	u_char		td_lend_user_pri; /* (t) Lend user pri. */
+
+\end{lstlisting}
+
+Overall, although processes are very similar between FreeBSD and Linux, threads are quite different. From a simplicity standpoint, I can see why Linux choses to use the same structure for threads and processes. Although, the threading approach in FreeBSD seems more lightweight than the threading in Linux. 
+
+\subsection{Windows}
+Unlike Linux, Windows threads are treated as a separate entity from a process. Each process has a list of threads in its structure which Linux processes do not have since threads are hardly distinct from the process they were created from. All processes start out with one thread, which is different from Linux. In terms of the API, it is used very similarly to Linux. Windows' \textit{CreateThread} is synonymous with Linux' \textit{pthread\_create}. Other comparable functions are Windows' \textit{ThreadExit} and Linux' \textit{pthread\_exit}, and Windows' \textit{WaitForSingleObject} and Linux' \textit{pthread\_join} \cite{win_thrd}. Each thread is represented by an \textit{ETHREAD} structure which has information such as a pointer to the containing process, an access token, and pending I/O requests. Like FreeBSD and unlike Linux, each thread also contains a pointer to a kernel thread.
+
+My thoughts on the Windows implementation are similar to those on the FreeBSD implementation. I think it makes sense to implement threads in a more similar way to their concept as a existing as part of a process.
+
+\section{CPU Scheduling}
+CPU scheduling is a vital part of an operating system and varies widely between implementations. CPU scheduling manages running processes. Different scheduling algorithms are used for different needs. 
+
+\subsection{Linux}
+In the Linux kernel version 2.6, the scheduler known as the O(1) scheduler was used by default, its namesake being that it takes constant time to schedule a task. Prior to this, the default scheduler ran on O(N) time. The way this scheduler works is by having two arrays of processes; one referred to as the active array and the other referred to as the expired array. The scheduler allocates a fixed quantum to each process in the active array and moves each process to the expired array when the given process has finished its quantum. Then the arrays are switched and the process repeats. The O(1) scheduler gives priority to tasks that it views as being interactive with the user, but the algorithm for computing the amount of interactivity has been criticized as being inaccurate \cite{linux_shd}.
+
+Shortly following the creation of the O(1) scheduler, the Completely Fair Scheduler, or CFS, was implemented as the default Linux scheduler in the 2.6.23 kernel release. The CFS is quite a bit different than the O(1) scheduler. As the name implies, the CFS is based on being "fair" to each process. Each process has a niceness value which is used to determine its priority and the size of its quantum. The niceness value of a given process changes as other processes run. Essentially, the CFS gives priority to processes most starved of CPU time (lower niceness values) in the name of fairness, which gets short simple tasks finished quickly and prevents longer-running tasks from starving. The CFS also does not use a simple run queue, but a tree to store processes waiting for execution. The CFS has time complexity of O(log(N)) \cite{linux_shd}.
+
+\subsection{FreeBSD}
+FreeBSD has a default scheduler called the ULE scheduler. The ULE scheduler is more similar to Linux' O(1) scheduler than the CFS. Like the O(1) scheduler, the ULE scheduler keeps two queues; one referred to as the current queue and another referred to as the next queue. Processes with higher priorities are put into the current queue and processes with lower priorities are placed into the next queue. When the current queue is empty, the queues switch. This means that long-running tasks will not starve. Priority and quantum size are recalculated every time a process is put back on a queue. Like the O(1) scheduler, tasks that are seen as more interactive are given high priority to maintain fast throughput. Highly interactive tasks are also given the minimum quantum size so the scheduler can quickly determine when an interactive process is no longer so \cite{bsd_shd}.
+
+Overall, the ULE scheduler is not that similar to Linux' current default scheduler, but it is similar to an old version. I do not see any glaring drawbacks to the ULE scheduler or CFS since both account for interactivity, throughput, and starvation. 
+
+\subsection{Windows}
+Looking through Microsoft's documentation regarding thread scheduling, one will notice that there is no specific name of a scheduler mentioned. This is because Windows does not have one specific scheduler and instead has scheduling-related code throughout the kernel and is called the kernel's dispatcher \cite{win_shd}. 
+
+Windows has priority levels of 0-31, with a higher value being higher priority. Windows treats all threads with the identical priorities identically and uses a round robin method of assignment. If none of the highest-priority threads are runnable, the next-highest-priority threads are attempted. If this happens and then a higher-priority thread becomes runnable when a lower-priority thread is running, a context switch occurs and the higher-priority thread is run \cite{win_shd2}. 
+
+Overall, scheduling in Windows seems much simpler than scheduling in Linux using the default CFS. Windows also does not have a dedicated scheduler and instead uses what is referred to as the kernel's dispatcher. I also see more of a chance for starvation using Windows' more simplistic method of scheduling.
+
+\newpage
+
+\begin{thebibliography}{18}
+
+\bibitem{linux_proc}
+Love, R. \textit{Linux Kernel Development}. 2nd ed. Indianapolis, IN: Novell, 2005. Print. \\
+Available: \url{http://www.makelinux.net/books/lkd2/ch03lev1sec1}
+
+\bibitem{win_proc}
+"EPROCESS." Windows Drivers. Microsoft, n.d. Web. 01 May 2017. \\
+Available: \url{https://msdn.microsoft.com/en-us/library/windows/hardware/ff544273(v=vs.85).aspx}
+
+\bibitem{win_proc2}
+Russinovich, M., and D. A. Solomon. "Processes, Threads, and Jobs in the Windows Operating System." \textit{The Microsoft Press Store}. Pearson Education, 17 June 2009. Web. 01 May 2017. \\
+Available: \url{https://www.microsoftpressstore.com/articles/article.aspx?p=2233328}
+
+\bibitem{win_proc3}
+"Processes in Unix, Linux, and Windows." Worcester Polytechnic Institute, 2008. Web. 1 May 2017. \\
+Available: \url{https://web.cs.wpi.edu/~cs3013/c08/LectureNotes--c08/Week\%202,\%20Linux-Windows\%20Processes.ppt}
+
+\bibitem{win_proc4}
+"Windows Process and Threads: C Run-Time 6 | Main | Windows Process and Threads Programming." \textit{The Tenouk's C, C++, Linux and Windows Network, Win32, Winsock/socket, STL, Windows GUI/MFC Programming Tutorials}. Tenouk, n.d. Web. 01 May 2017. \\
+\url{http://www.tenouk.com/ModuleT.html}
+
+\bibitem{bsd_proc}
+McKusick, M. K., G. V. Neville-Neil, and R. N. M. Watson. \textit{The Design and Implementation of the FreeBSD Operating System}. Upper Saddle River: Addison-Wesley/Pearson, 2015. Print.
+
+\bibitem{bsd_proc2}
+"5.1.2. Struct Proc Structure." \textit{FreeBSD Device Driver Writer's Guide}. FreeBSD, n.d. Web. 01 May 2017. \\
+Available: \url{https://people.freebsd.org/~meganm/data/tutorials/ddwg/ddwg63.html}
+
+\bibitem{bsd_proc3}
+"Chapter 3. FreeBSD Basics." \textit{FreeBSD}. FreeBSD, n.d. Web. 01 May 2017. \\
+Available: \url{https://www.freebsd.org/doc/handbook/basics-processes.html}
+
+\bibitem{linux_thrd}
+Mitchell, M., J. Oldham, and A. Samuel. \textit{Advanced Linux Programming}. Indianapolis, Ind. ; Munich: New Riders, 2003. Print. \\
+Available: \url{http://advancedlinuxprogramming.com/alp-folder/}
+
+\bibitem{bsd_thrd}
+"A Look Inside." \textit{FreeBSD}. FreeBSD, n.d. Web. 01 May 2017. \\
+Available: \url{https://www.freebsd.org/doc/en_US.ISO8859-1/articles/linux-emulation/inside.html}
+
+\bibitem{bsd_thrd2}
+FreeBSD on GitHub. Commit: 2a8ac69. 30 April 2017. Web. 01 May 2017. \\
+Available: \url{https://github.com/freebsd/freebsd/blob/master/sys/sys/proc.h}
+
+\bibitem{win_thrd}
+"Processes and Threads." System Services. Microsoft, n.d. Web. 01 May 2017. \\
+Available: \url{https://msdn.microsoft.com/en-us/library/windows/desktop/ms684847(v=vs.85).aspx}
+
+\bibitem{win_thrd2}
+Russinovich, M. E., and D. A. Solomon. "Processes, Threads, and Jobs in the Windows Operating System." \textit{Microsoft Press Store}. Pearson Education, 06 June 2009. Web. 01 May 2017. \\
+Available: \url{https://www.microsoftpressstore.com/articles/article.aspx?p=2233328&seqNum=4}
+
+\bibitem{linux_shd}
+Pabla, C. S. "Completely Fair Scheduler." \textit{Linux Journal}. Linux Journal, 01 Aug. 2009. Web. 01 May 2017. \\
+Available: \url{http://www.linuxjournal.com/magazine/completely-fair-scheduler}
+
+\bibitem{bsd_shd}
+Roberson J. ULE: A Modern Scheduler for FreeBSD. In BSDCon 08 Sept. 2003. (pp. 17-28). \\
+Available: \url{http://web.cs.ucdavis.edu/~roper/ecs150/ULE.pdf}
+
+\bibitem{win_shd}
+Russinovich, M. E., D. A. Solomon, and A. Ionescu. \textit{Windows Internals}. Redmond (Wash.): Microsoft, 2012. Print.
+
+\bibitem{win_shd2}
+"Scheduling Priorities." System Services. Microsoft, n.d. Web. 01 May 2017. \\
+\url{https://msdn.microsoft.com/en-us/library/windows/desktop/ms685100(v=vs.85).aspx}
+
+\end{thebibliography}
+
+
+\end{document}

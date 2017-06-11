@@ -1,0 +1,128 @@
+\documentclass[10pt,draftclsnofoot,onecolumn,journal,compsoc]{IEEEtran}
+% for IEEEtran usage, see http://www.texdoc.net/texmf-dist/doc/latex/IEEEtran/IEEEtran_HOWTO.pdf
+
+\usepackage[margin=0.75in]{geometry}
+\usepackage{graphicx}
+\usepackage{caption}
+\usepackage{hyperref}
+\usepackage{enumerate}
+\usepackage[dvipsnames]{xcolor}
+\usepackage{amssymb}
+\usepackage{listings}
+\usepackage{float}
+\title{Interrupts in Linux, FreeBSD, and Windows}
+\author{
+  \IEEEauthorblockN{Heidi Clayton} \\
+  \IEEEauthorblockA{CS 444: Operating Systems II Spring 2017 \\ Oregon State University}
+}
+
+\lstdefinestyle{C_listing}{
+  language=C,
+  keywordstyle=\color{Fuchsia},
+  commentstyle=\itshape\color{ForestGreen},
+}
+\lstset{style=C_listing}
+
+
+   
+\begin{document}
+\maketitle
+\newpage
+\tableofcontents
+\newpage
+\section{Introduction}
+Interrupts are a crucial part of communication between the hardware and processor. For example, the keyboard controller sends out a signal to the processor to let the operating system know about the key presses. That signal is what is known as an interrupt \cite{linux}.
+
+\section{Linux}
+ In Linux, certain types of devices are represented by values that are called Interrupt Requests. For example, a keyboard is represented by the IRQ "one". These IRQs are serviced by what are called interrupt handlers. Interrupt handlers are just basic C functions that follow a standard format, seen in the code below \cite{linux}.
+ 
+\begin{lstlisting}[caption={The \textit{request\_irq} prototype in the linux/interrupt.h file. Note that the \textit{handler} parameter is a function pointer to the interrupt handler.}]
+/* request_irq: allocate a given interrupt line */
+int request_irq(unsigned int irq,
+                irqreturn_t (*handler)(int, void *, struct pt_regs *),
+                unsigned long irqflags,
+                const char *devname,
+                void *dev_id)
+\end{lstlisting}
+Processing interrupts is broken into two parts. The first part is the aforementioned interrupt handler, referred to as a "top half". Interrupt handlers are written with just the basics in mind. They perform any crucial operations, such as resetting the hardware. The other part of the process is called a "bottom half". Bottom halves do the rest of the work that isn't time-critical, such as processing packets from network cards \cite{linux}. 
+
+Bottom halves are a bit different in implementation from top halves. Top halves only have one exact way they can be written, but bottom halves have three. The three different types of bottom halves are known as softirqs, tasklets, and work queues. What one is ideal to be used depends on the type of work that needs to be done. 
+
+Softirqs are generally pretty good to use for tasks that require many threads. They never pre-empt each other and the same softirq can be run on multiple CPUs at the same time. They are also the least used in the Linux kernel and for a few reasons. One is that they are statically allocated, so they cannot be destroyed or dynamically created. Another is that the kernel has a limit of only 32 softirqs allowed to exist at once, which are stored in an array in kernel/softirq.c called \textit{softirq\_vec} \cite{linux}. Each entry in this array is of the structure type listed below.
+\begin{lstlisting}[caption={The \textit{softirq\_action} structure in the linux/interrupt.h file.}]
+/*
+ * structure representing a single softirq entry
+ */
+struct softirq_action {
+        void (*action)(struct softirq_action *); /* function to run */
+        void *data;                              /* data to pass to function */
+};
+\end{lstlisting}
+Softirqs are given a priority and are scheduled via that priority. Below is a list of important softirq priorities \cite{linux}. They can be found in linux/interrupt.h. \\ \\
+\begin{tabular}{ | p{0.25\linewidth} | p{0.25\linewidth} | p{0.25\linewidth} | }
+    \hline
+Tasklet & Priority & Description \\ \hline
+HI\_SOFTIRQ & 0 & High-priority tasklets \\ \hline
+TIMER\_SOFTIRQ & 1 & Timer bottom half \\ \hline
+BLOCK\_SOFTIRQ & 4 & Block devices \\ \hline
+TASKLET\_SOFTIRQ & 5 & Tasklets \\ \hline
+SCHED\_SOFTIRQ & 6 & Scheduler \\ \hline
+\end{tabular} \\ \\ 
+Tasklets are built on top of softirqs are are the most used. Tasklets can be dynamically allocated and destroyed and one tasklet can only be run on one CPU at once. Below is the structure for a tasklet.
+
+\begin{lstlisting}[caption={The \textit{tasklet\_struct} structure in the linux/interrupt.h file.}]
+struct tasklet_struct {
+        struct tasklet_struct *next;  /* next tasklet in the list */
+        unsigned long state;          /* state of the tasklet */
+        atomic_t count;               /* reference counter */
+        void (*func)(unsigned long);  /* tasklet handler function */
+        unsigned long data;           /* argument to the tasklet function */
+};
+\end{lstlisting}
+Tasklets are also run based on priority values. They are scheduled with either the \textit{HI\_SOFTIRQ} or \textit{TASKLET\_SOFTIRQ} priorities. 
+
+Work queues are quite different than softirqs and tasklets. While softirqs and tasklets are run in the interrupt context, work queues are run in the process context. This means that they can be scheduled and sleep just like a normal process. If work needs to be able to sleep, work queues are the ideal option. Otherwise, use a tasklet. The structure of a work queue is found below.
+
+\begin{lstlisting}[caption={The \textit{workqueue\_struct} structure in the linux/workqueue.h file.}]
+/*
+ * The externally visible workqueue abstraction is an array of
+ * per-CPU workqueues:
+ */
+struct workqueue_struct {
+        struct cpu_workqueue_struct cpu_wq[NR_CPUS];
+        const char *name;
+        struct list_head list;
+};
+\end{lstlisting}
+
+\section{FreeBSD}
+Like Linux, FreeBSD also has a concept of top and bottom halves when processing interrupt requests. FreeBSD has three types of interrupts. There are driver interrupts, software interrupts, and clock interrupts. 
+
+Driver interrupts are similar to threads in FreeBSD. Interrupts are run in the process context and cannot access the context of any previously processed interrupts. They also have their own stack. Like Linux work queues, these types of interrupts can sleep \cite{bsd}. 
+
+Software interrupts are scheduled at a lower priority than driver interrupts. They too are run in the process context and can block. When interrupts are scheduled, driver interrupts go first. When there are no more of them, the next software interrupt goes next. If a higher-priority interrupt request happens while a software interrupt is being processed, it is pre-empted and the higher-priority interrupt request is processed \cite{bsd}.
+
+Clock interrupts are quite different from driver and software interrupts. Clock interrupts are referred to as \textit{ticks} and happen 1000 times per second. This is done so that the system's time is updated as well as user-process and system timers. These interrupts are scheduled at a very high priority. There are not many situations where it will be waiting on another interrupt \cite{bsd}.  
+
+\section{Windows}
+In Windows, when an interrupt request is triggered, the kernel saves the state of the processor and then resumes that state when the interrupt request is done being processed. The kernel then queries the interrupt controller (usually a variant of the i82489 Programmable Interrupt Controller on x86 systems) which then assigns a number to the interrupt request, similar to Linux requests. This number is used to insert the interrupt into a table known as the Interrupt Dispatch Table, or IDT. When Windows boots, the elements of the IDT are assigned pointers to the appropriate routines to handle them \cite{win}. 
+
+Software requests, though less common than hardware interrupts, have an important place on the Windows operating system. Types of tasks that that are facilitated by software interrupts are thread dispatching, asynchronous I/O, and timer expiration, among others. One specific type of software interrupt is called a Dispatch or Deferred Procedure Call, or DPC. These types of software interrupts are enacted when a thread is sleeping or has terminated. The interrupt request is send in order to facilitate a context switch, as discussed in the CPU scheduling section \cite{win}.
+
+Windows also has priority levels for interrupts. They range from 0 to 31 on x86 systems. Unlike Linux, a higher number means higher priority. Generally, hardware interrupts have priorities ranging from 3 to 31 and software interrupts have priorities of 2 or 1 \cite{win}. 
+\newpage
+
+\begin{thebibliography}{18}
+
+\bibitem{linux}
+Love, R. \textit{Linux Kernel Development}. 2nd ed. Indianapolis, IN: Novell, 2005. Print.
+
+\bibitem{bsd}
+McKusick, M. K., G. V. Neville-Neil, and R. N. M. Watson. \textit{The Design and Implementation of the FreeBSD Operating System}. Upper Saddle River: Addison-Wesley/Pearson, 2015. Print.
+
+\bibitem{win}
+Russinovich, M. E., D. A. Solomon, and A. Ionescu. \textit{Windows Internals Part I}. Redmond (Wash.): Microsoft, 2012. Print.
+\end{thebibliography}
+
+
+\end{document}
